@@ -1,5 +1,4 @@
-# import numpy as np
-import autograd.numpy as np
+import numpy as np
 from collections import deque
 from copy import deepcopy
 from matplotlib import pyplot as plt
@@ -20,7 +19,6 @@ class CRNN():
         self.history_len = history_len
         self.record = record
         self.save_every = save_every
-        self.rect_param = 0.0001
         self.V = V_init
         self.u = u_init
         self.p = np.zeros((self.N, self.N, self.N))
@@ -28,6 +26,8 @@ class CRNN():
         self.r = np.zeros((self.N, self.N))
         self.l = np.zeros((self.N, self.N))
         self.t = 0
+
+        self.rect_param = 0.0001
         self.fr_fun = lambda x: 1.0/(1 + np.exp(-(x - self.V_half) / self.slope))# + self.rect_param * np.maximum(x, self.V_half)
         self.fr_fun_der = lambda x: (1.0 / self.slope) * self.fr_fun(x) * (1 - self.fr_fun(x))# + self.rect_param * ((x - self.V_half) > 0)
 
@@ -38,6 +38,7 @@ class CRNN():
         #         y_ = y_ - self.rect_param * np.maximum(x, self.V_half)
         #     return x
         # self.inverse_fr_fun = lambda y: inverse_fr_fun(y)
+
         self.inverse_fr_fun = lambda y: - self.slope * np.log((1 - y) / y) + self.V_half
         if self.record == True:
             self.V_history = deque(maxlen=self.history_len)
@@ -89,7 +90,7 @@ class CRNN():
         for i in range(len(axes)):
             if i == 0: axes[i].set_title('Firing Rates')
             axes[i].plot(t_array, self.fr_fun(V_array[i]), 'k', linewidth=2, alpha=0.9)
-            axes[i].set_ylim([-0.1, 1.0])
+            axes[i].set_ylim([-0.1, 1.2])
             # axes[i].set_yticks([])
             # axes[i].set_yticklabels([])
             if i != len(axes) - 1:
@@ -106,7 +107,6 @@ if __name__ == '__main__':
     T_steps = 100000
     save_every = 1
     record = True
-
     params = dict()
     params['alpha'] = 0.0015
     params['beta'] = 0.005
@@ -117,6 +117,7 @@ if __name__ == '__main__':
     weights = 3 * np.random.rand(N, N) - 2
     biases = 0.1 + 0.05 * np.random.rand(N)
     rnn = CRNN(N, dt, params, V_init, u_init, weights, biases, record=record, save_every=save_every)
+
     # simple run
     rnn.reset_history()
     rnn.run(T_steps)
