@@ -9,7 +9,16 @@ from tqdm.auto import tqdm
 
 
 class LearningMechanism():
+    '''
+    Algorithm for learning in RNNs: rule for updating weights and biases during the run
+    '''
     def __init__(self, RNN, params):
+        '''
+        :param RNN:
+        :param params:
+        :param fictive feedback: if True, the internal network sees the output neurons as if they are following the target trajectory
+        
+        '''
         self.RNN = RNN
         self.lr = params['lr']
         self.horizon = params['horizon']
@@ -208,11 +217,11 @@ class RealTimeRL(LearningMechanism):
             self.RNN.V[self.output_nrns] = targets
             next_V_fictive = self.RNN.V + self.RNN.dt * (self.RNN.rhs_V())
             next_u_fictive = self.RNN.u + self.RNN.dt * (self.RNN.rhs_u())
-            self.V_buffer.append(deepcopy(next_V_fictive))
-            self.u_buffer.append(deepcopy(next_u_fictive))
             next_V_fictive[self.output_nrns] = next_V_out
             next_u_fictive[self.output_nrns] = next_u_out
-            # set it back
+            self.V_buffer.append(deepcopy(next_V_fictive))
+            self.u_buffer.append(deepcopy(next_u_fictive))
+            # update state of the RNN
             self.RNN.V = deepcopy(next_V_fictive)
             self.RNN.u = deepcopy(next_u_fictive)
 
@@ -284,7 +293,7 @@ class RealTimeRL(LearningMechanism):
 
 
 if __name__ == '__main__':
-    N = 20
+    N = 30
     dt = 1
     T_steps = 500000
     save_every = 1
@@ -303,8 +312,8 @@ if __name__ == '__main__':
 
     params_lm = dict()
     params_lm['lr'] = 1e-3
-    params_lm['horizon'] = 400
-    params_lm['momentum'] = 0.5
+    params_lm['horizon'] = 200
+    params_lm['momentum'] = 0.6
     params_lm['fictive_feedback'] = True
     # lm = BPTT(RNN=rnn, params=params_lm)
     lm = RealTimeRL(RNN=rnn, params=params_lm)

@@ -5,10 +5,26 @@ from matplotlib import pyplot as plt
 
 class CRNN():
     def __init__(self, N, dt, params, V_init, u_init, weights, biases, record, save_every,  history_len=50000):
+        '''
+        Continuous recurrent neural network with adaptation mechanism. THe dynamics is following:
+        dV_i/dt = sum_p(W_{pi} s_p) - u_i + b_i <- neural membrane potential
+        du/dt = alpha * (beta * V_i - u_i) <- adaptation variable
+        s_i(V_i) = 1.0 / (1 + exp(-(V_i - V_half) / slope)) <- firing rate mapping
+        :param N: number of neural nodes
+        :param dt: time-step size
+        :param params: dictionary, parameters of the dymanics
+        :param V_init: initial memraine potential
+        :param u_init: initial adaptation
+        :param weights: weights of synaptic connections
+        :param biases: input tonic currents
+        :param record: boolean, save the history of running the network
+        :param save_every: save variables every 'save_every' timestep
+        :param history_len: max length of the historical data
+        '''
         self.N = N
         self.dt = dt
         self.params = params
-        # enforce zero self-coupling
+        # Enforce zero self-coupling
         np.fill_diagonal(weights, 0)
         self.W = weights
         self.b = biases
@@ -28,8 +44,8 @@ class CRNN():
         self.t = 0
 
         self.rect_param = 0.0001
-        self.fr_fun = lambda x: 1.0/(1 + np.exp(-(x - self.V_half) / self.slope))# + self.rect_param * np.maximum(x, self.V_half)
-        self.fr_fun_der = lambda x: (1.0 / self.slope) * self.fr_fun(x) * (1 - self.fr_fun(x))# + self.rect_param * ((x - self.V_half) > 0)
+        self.fr_fun = lambda x: 1.0/(1 + np.exp(-(x - self.V_half) / self.slope)) # + self.rect_param * np.maximum(x, self.V_half)
+        self.fr_fun_der = lambda x: (1.0 / self.slope) * self.fr_fun(x) * (1 - self.fr_fun(x)) # + self.rect_param * ((x - self.V_half) > 0)
 
         # def inverse_fr_fun(y):
         #     y_ = y + 0.0001
@@ -91,8 +107,8 @@ class CRNN():
             if i == 0: axes[i].set_title('Firing Rates')
             axes[i].plot(t_array, self.fr_fun(V_array[i]), 'k', linewidth=2, alpha=0.9)
             axes[i].set_ylim([-0.1, 1.2])
-            # axes[i].set_yticks([])
-            # axes[i].set_yticklabels([])
+            axes[i].set_yticks([])
+            axes[i].set_yticklabels([])
             if i != len(axes) - 1:
                 axes[i].set_xticks([])
                 axes[i].set_xticklabels([])
