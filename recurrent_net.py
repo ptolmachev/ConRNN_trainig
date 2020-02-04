@@ -82,10 +82,10 @@ class CRNN():
         self.t_range = deque(maxlen=self.history_len)
         return None
 
-    def visualise_fr(self):
+    def visualise_fr(self, num):
         V_array = np.array(self.V_history).T
         t_array = np.array(self.t_range)
-        fig, axes = plt.subplots(self.N, 1, figsize=(20, 10))
+        fig, axes = plt.subplots(num, 1, figsize=(20, 10))
         if type(axes) != np.ndarray: axes = [axes]
         for i in range(len(axes)):
             if i == 0: axes[i].set_title('Firing Rates')
@@ -103,7 +103,7 @@ class CRNN():
 
 if __name__ == '__main__':
     N = 10
-    dt = 1
+    dt = 0.1
     T_steps = 100000
     save_every = 1
     record = True
@@ -121,6 +121,6 @@ if __name__ == '__main__':
     # simple run
     rnn.reset_history()
     rnn.run(T_steps)
-    rnn.visualise_fr()
+    rnn.visualise_fr(10)
 
 

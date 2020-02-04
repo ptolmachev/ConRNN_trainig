@@ -13,11 +13,16 @@ class LearningMechanism():
         self.RNN = RNN
         self.lr = params['lr']
         self.horizon = params['horizon']
+        self.mu = params['momentum']
+        self.fictive_feedback = params['fictive_feedback']
         self.V_buffer = deque(maxlen=self.horizon + 1)
         self.u_buffer = deque(maxlen=self.horizon + 1)
         self.V_buffer.append(deepcopy(self.RNN.V))
         self.u_buffer.append(deepcopy(self.RNN.u))
         self.target_history = deque(maxlen=self.RNN.history_len)
+        self.v_W = np.zeros((self.RNN.N, self.RNN.N))
+        self.v_b = np.zeros(self.RNN.N)
+
 
     def set_targets(self, out_nrns, targets):
         self.output_nrns = out_nrns
@@ -31,14 +36,14 @@ class LearningMechanism():
     def run_learning(self, T_steps):
         pass
 
-    def calculate_Wb_change(self, desired):
+    def calc_gradients(self, desired):
         pass
 
-    def visualise(self):
+    def visualise(self, num):
         V_array = np.array(self.RNN.V_history).T
         target_array = np.array(self.target_history).T
         t_array = np.array(self.RNN.t_range)
-        fig, axes = plt.subplots(self.RNN.N, 1, figsize=(20, 10))
+        fig, axes = plt.subplots(num, 1, figsize=(20, 10))
         if type(axes) != np.ndarray: axes = [axes]
         k = 0
         for i in range(len(axes)):
@@ -76,37 +81,32 @@ class BPTT(LearningMechanism):
         # except initial conditions
         V_array = np.array(self.V_buffer)[1:, :].T # N x h
         target = target.T # N x h
-        grad_W = np.zeros((N, N), dtype = np.float64)
-        grad_b = np.zeros((N), dtype = np.float64)
-
-        # for every time-layer (except for the zeroth time-layer)
+        grad_W = np.zeros((N, N))
+        grad_b = np.zeros((N))
         for p in np.arange(h)[::-1]:
-            delta = np.zeros((N, p + 1), dtype = np.float64)  # dE / d v
-            gamma = np.zeros((N, p + 1), dtype = np.float64)  # dE / d u
-            e = np.zeros(N, dtype = np.float64)
+            e = np.zeros(N)
             e[self.output_nrns] = 2 * (self.RNN.fr_fun(V_array[self.output_nrns, p]) - target[:, p])
-            delta[:, -1] = self.RNN.fr_fun_der(V_array[:, p]) * e # delta on the last time step
+            delta = self.RNN.fr_fun_der(V_array[:, p]) * e # delta on the last time step
+            gamma = np.zeros_like(delta)
             for t in np.arange(p)[::-1]:
-                grad_W += dt * deepcopy(self.RNN.fr_fun(V_array[:, t]).reshape(N, 1) @ delta[:, t + 1].reshape(1, N))
-                grad_b += dt * deepcopy(delta[:, t + 1])
-                delta_t = delta[:, t + 1] + dt * delta[:, t + 1]\
-                          @ (W.T * self.RNN.fr_fun_der(V_array[:, t])) \
-                          + dt * alpha * beta * gamma[:, t + 1]
-                gamma_t = gamma[:, t + 1] - dt * (alpha * gamma[:, t + 1] + delta[:, t + 1])
-                delta[:, t] = deepcopy(delta_t)
-                gamma[:, t] = deepcopy(gamma_t)
-            #add the last piece: the gradient of weights from initial conditions to the first output
-            grad_W += dt * deepcopy(self.RNN.fr_fun(V_init).reshape(N, 1) @ delta[:, 0].reshape(1, N))
-            grad_b += dt * deepcopy(delta[:, 0])
+                grad_W += dt * deepcopy(self.RNN.fr_fun(V_array[:, t]).reshape(N, 1) @ delta.reshape(1, N))
+                grad_b += dt * deepcopy(delta)
+                delta_new = delta + dt * delta @ (W.T * self.RNN.fr_fun_der(V_array[:, t])) + dt * alpha * beta * gamma
+                gamma_new = gamma - dt * (alpha * gamma + delta)
+                delta = delta_new
+                gamma = gamma_new
+            # add the last piece: the gradient of weights from initial conditions to the first output
+            grad_W += dt * deepcopy(self.RNN.fr_fun(V_init).reshape(N, 1) @ delta.reshape(1, N))
+            grad_b += dt * deepcopy(delta)
         return grad_W, grad_b
 
-    def calculate_Wb_change(self, desired):
+    def calc_gradients(self, desired):
         # Use internal information from the buffer to calculate gradients
         # Calculate error term
         gradient_W, gradient_b = self.backprop(desired)
-        dW = -self.lr * deepcopy(gradient_W)
-        db = -self.lr * deepcopy(gradient_b)
-        return dW, db
+        grad_W = deepcopy(gradient_W)
+        grad_b = deepcopy(gradient_b)
+        return grad_W, grad_b
 
     def reset_buffers(self):
         self.V_buffer = deque(maxlen=self.horizon + 1)
@@ -121,15 +121,15 @@ class BPTT(LearningMechanism):
             if (i != 0) and (i % self.horizon == 0):
                 desired = self.targets[i - self.horizon:i, :]
                 # Calculate weights' and biases' update
-                dW, db = self.calculate_Wb_change(desired)
+                grad_W, grad_b = self.calc_gradients(desired)
                 # Enforce zero self coupling
-                np.fill_diagonal(dW, 0)
-
+                np.fill_diagonal(grad_W, 0)
+                # Save new update directions
+                self.v_W = self.mu * self.v_W - self.lr * grad_W
+                self.v_b = self.mu * self.v_b - self.lr * grad_b
                 # Apply changes
-                new_W = self.RNN.W + dW
-                np.fill_diagonal(new_W, 0)
-                self.RNN.W = deepcopy(new_W)
-                self.RNN.b = deepcopy(self.RNN.b + db)
+                self.RNN.W = self.RNN.W + self.v_W
+                self.RNN.b = self.RNN.b + self.v_b
 
                 # Enforce current state to coincide with the target state
                 # self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
@@ -145,7 +145,7 @@ class BPTT(LearningMechanism):
         return None
 
 
-class RealTimeRBP(LearningMechanism):
+class RealTimeRL(LearningMechanism):
     def __init__(self, RNN, params):
         super().__init__(RNN, params)
         # auxiliary buffers
@@ -187,7 +187,7 @@ class RealTimeRBP(LearningMechanism):
         l_next = self.l + self.RNN.dt * (self.rhs_l())
         return p_next, q_next, r_next, l_next
 
-    def rnn_step(self):
+    def rnn_step(self, targets):
         # update aux variables befire V and u because they depend on the un-updeted variables
         p_next, q_next, r_next, l_next = self.get_aux_variables()
         self.p = deepcopy(p_next)
@@ -200,9 +200,29 @@ class RealTimeRBP(LearningMechanism):
         self.r_buffer.append(deepcopy(self.r))
         self.l_buffer.append(deepcopy(self.l))
 
-        self.RNN.run(1) # one time-step
-        self.V_buffer.append(deepcopy(self.RNN.V))
-        self.u_buffer.append(deepcopy(self.RNN.u))
+        if self.fictive_feedback == True:
+            # run one step for output neurons:
+            next_V_out = deepcopy(self.RNN.V[self.output_nrns] + self.RNN.dt * (self.RNN.rhs_V()[self.output_nrns]))
+            next_u_out = deepcopy(self.RNN.u[self.output_nrns] + self.RNN.dt * (self.RNN.rhs_u()[self.output_nrns]))
+            #set the output neurons as if they are following target trajectory
+            self.RNN.V[self.output_nrns] = targets
+            next_V_fictive = self.RNN.V + self.RNN.dt * (self.RNN.rhs_V())
+            next_u_fictive = self.RNN.u + self.RNN.dt * (self.RNN.rhs_u())
+            self.V_buffer.append(deepcopy(next_V_fictive))
+            self.u_buffer.append(deepcopy(next_u_fictive))
+            next_V_fictive[self.output_nrns] = next_V_out
+            next_u_fictive[self.output_nrns] = next_u_out
+            # set it back
+            self.RNN.V = deepcopy(next_V_fictive)
+            self.RNN.u = deepcopy(next_u_fictive)
+
+            self.RNN.t += self.RNN.dt
+            self.RNN.V_history.append(deepcopy(self.RNN.V))
+            self.RNN.t_range.append(deepcopy(self.RNN.t + self.RNN.dt))
+        else:
+            self.RNN.run(1)  # one time-step
+            self.V_buffer.append(deepcopy(self.RNN.V))
+            self.u_buffer.append(deepcopy(self.RNN.u))
         return None
 
     def reset_buffers(self):
@@ -227,45 +247,46 @@ class RealTimeRBP(LearningMechanism):
         self.l_buffer.append(deepcopy(self.l))
         return None
 
+    def calc_gradients(self, desired):
+        # Take the arrays without the initial condition
+        V_out = np.array(self.V_buffer)[1:, self.output_nrns]  # (time, outputs)
+        p_out = np.array(self.p_buffer)[1:, self.output_nrns, :, :]  # (time, outputs, i, j)
+        r_out = np.array(self.r_buffer)[1:, self.output_nrns, :]  # (time, outputs)
+        e = 2 * (self.RNN.fr_fun(V_out) - desired)
+        grad_W = np.einsum("ij,ijkl->kl", e * self.RNN.fr_fun_der(V_out), p_out)
+        grad_b = np.einsum("ij,ijk->k", e * self.RNN.fr_fun_der(V_out), r_out)
+        return grad_W, grad_b
+
     def run_learning(self, T_steps):
         for i in tqdm(range(T_steps)):
             if (i != 0) and (i % self.horizon == 0):
                 desired = self.targets[i - self.horizon:i, :]
-                # Calculate weights and biases update
-                # Take the arrays without the initial condition
-                V_out = np.array(self.V_buffer)[1:, self.output_nrns]  # (time, outputs)
-                p_out = np.array(self.p_buffer)[1:, self.output_nrns, :, :]  # (time, outputs, i, j)
-                r_out = np.array(self.r_buffer)[1:, self.output_nrns, :]  # (time, outputs)
-                e = 2 * (self.RNN.fr_fun(V_out) - desired)
-                dW = - self.lr * np.einsum("ij,ijkl->kl", e * self.RNN.fr_fun_der(V_out), p_out)
-                db = - self.lr * np.einsum("ij,ijk->k", e * self.RNN.fr_fun_der(V_out), r_out)
-
+                # Calculate weights and biases gradients
+                grad_W, grad_b = self.calc_gradients(desired)
                 # Enforce zero self coupling
-                np.fill_diagonal(dW, 0)
-
+                np.fill_diagonal(grad_W, 0)
+                # Save new update directions
+                self.v_W = self.mu * self.v_W - self.lr * grad_W
+                self.v_b = self.mu * self.v_b - self.lr * grad_b
                 # Apply changes
-                new_W = self.RNN.W + dW
-                np.fill_diagonal(new_W, 0)
-                self.RNN.W = deepcopy(new_W)
-                self.RNN.b = deepcopy(self.RNN.b + db)
-
+                self.RNN.W = self.RNN.W + self.v_W
+                self.RNN.b = self.RNN.b + self.v_b
                 # Enforce current state to coincide with the target state
-                # self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
-
+                self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
                 # Reset buffers
                 self.reset_buffers()
-
                 # Decrease learning rate
                 # self.lr *= 0.9995
 
-            self.rnn_step()
+            self.rnn_step(targets=self.RNN.inverse_fr_fun(self.targets[i, :]))
             self.target_history.append(deepcopy(self.targets[i, :]))
         return None
 
+
 if __name__ == '__main__':
-    N = 8
-    dt = 0.1
-    T_steps = 100000
+    N = 20
+    dt = 1
+    T_steps = 500000
     save_every = 1
     record = True
 
@@ -276,31 +297,32 @@ if __name__ == '__main__':
     params["slope"] = 50
     V_init = -50 + 100 * np.random.rand(N)
     u_init = 0.02 * np.random.rand(N) - 0.01
-    weights = 1 * np.random.rand(N, N) - 0.67
-    biases = 0.1 + 0.1 * np.random.rand(N)
+    weights = 3 * np.random.rand(N, N) - 2
+    biases = 0.2 + 0.1 * np.random.rand(N)
     rnn = CRNN(N, dt, params, V_init, u_init, weights, biases, record=record, save_every=save_every)
 
     params_lm = dict()
     params_lm['lr'] = 1e-3
-    params_lm['horizon'] = 200
-
+    params_lm['horizon'] = 400
+    params_lm['momentum'] = 0.5
+    params_lm['fictive_feedback'] = True
     # lm = BPTT(RNN=rnn, params=params_lm)
-    lm = RealTimeRBP(RNN=rnn, params=params_lm)
+    lm = RealTimeRL(RNN=rnn, params=params_lm)
 
-    out_nrns = [0, 1]
+    out_nrns = [0]
     t_range = np.arange(T_steps + 2 * params_lm['horizon'])
     targets = np.array([
-                        0.25 * np.ones(len(t_range)),
-                        0.75 * np.ones(len(t_range))
-                        # rnn.fr_fun(-30 + 150 * np.sin(np.pi / 800 * t_range) + 100 * np.cos(np.pi / 1200 * t_range)),
-                        # rnn.fr_fun(-30 + 150 * np.sin(np.pi / 900 * t_range + np.pi))
+                        # 0.25 * np.ones(len(t_range)),
+                        # 0.75 * np.ones(len(t_range))
+                        rnn.fr_fun(-30 + 150 * np.sin(np.pi / 1200 * t_range) + 100 * np.cos(np.pi / 1800 * t_range)),
+                        # rnn.fr_fun(-30 + 150 * np.sin(np.pi / 2000 * t_range + np.pi))
                         ]).T
     lm.set_targets(out_nrns, targets)
     lm.run_learning(T_steps)
-    lm.visualise()
+    lm.visualise(10)
 
     rnn.reset_history()
-    rnn.run(T_steps=25000)
-    rnn.visualise_fr()
+    rnn.run(T_steps=50000)
+    rnn.visualise_fr(10)
 
 
