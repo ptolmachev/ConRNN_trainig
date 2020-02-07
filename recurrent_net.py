@@ -2,9 +2,11 @@ import numpy as np
 from collections import deque
 from copy import deepcopy
 from matplotlib import pyplot as plt
+from tqdm.auto import tqdm
 
 class CRNN():
-    def __init__(self, N, dt, params, V_init, u_init, weights, biases, record, save_every,  history_len=50000):
+    def __init__(self, N, dt, params, V_init, u_init, weights, biases, save_every,
+                 history_len=500000, record = None, inds_record = None):
         '''
         Continuous recurrent neural network with adaptation mechanism. THe dynamics is following:
         dV_i/dt = sum_p(W_{pi} s_p) - u_i + b_i <- neural membrane potential
@@ -57,6 +59,10 @@ class CRNN():
 
         self.inverse_fr_fun = lambda y: - self.slope * np.log((1 - y) / y) + self.V_half
         if self.record == True:
+            if type(inds_record) == str and inds_record == 'all':
+                self.inds_record = np.arange(self.N)
+            else:
+                self.inds_record = inds_record
             self.V_history = deque(maxlen=self.history_len)
             self.target_history = deque(maxlen=self.history_len)
         self.t_range = deque(maxlen=self.history_len)
@@ -87,7 +93,7 @@ class CRNN():
                 if self.save_every is None:
                     raise ValueError("One should also specify \'save_every\' parameter if \'record\' = True")
                 if i % self.save_every == 0:
-                    self.V_history.append(deepcopy(self.V))
+                    self.V_history.append(deepcopy(self.V[self.inds_record]))
                     self.t_range.append(deepcopy(self.t + self.dt))
         return None
 
@@ -98,21 +104,23 @@ class CRNN():
         self.t_range = deque(maxlen=self.history_len)
         return None
 
-    def visualise_fr(self, num):
+    def visualise(self):
         V_array = np.array(self.V_history).T
         t_array = np.array(self.t_range)
-        fig, axes = plt.subplots(num, 1, figsize=(20, 10))
+        fig, axes = plt.subplots(len(self.inds_record), 1, figsize=(20, 10))
         if type(axes) != np.ndarray: axes = [axes]
-        for i in range(len(axes)):
+        k = 0
+        for i, ind in enumerate(self.inds_record):
             if i == 0: axes[i].set_title('Firing Rates')
-            axes[i].plot(t_array, self.fr_fun(V_array[i]), 'k', linewidth=2, alpha=0.9)
-            axes[i].set_ylim([-0.1, 1.2])
+            axes[i].plot(t_array, self.fr_fun(V_array[k, :]), 'k', linewidth=2, alpha=0.9)
+            axes[i].set_ylim([-0.1, 1.1])
             axes[i].set_yticks([])
             axes[i].set_yticklabels([])
             if i != len(axes) - 1:
                 axes[i].set_xticks([])
                 axes[i].set_xticklabels([])
             axes[i].set_xlabel('t, ms')
+            k += 1
         plt.subplots_adjust(wspace=0.01, hspace=0)
         plt.show()
         return None
@@ -120,9 +128,10 @@ class CRNN():
 if __name__ == '__main__':
     N = 10
     dt = 0.1
-    T_steps = 100000
+    T_steps = 500000
     save_every = 1
     record = True
+    inds_record = [0,1,4,9]
     params = dict()
     params['alpha'] = 0.0015
     params['beta'] = 0.005
@@ -132,11 +141,11 @@ if __name__ == '__main__':
     u_init = 0.02 * np.random.rand(N) - 0.01
     weights = 3 * np.random.rand(N, N) - 2
     biases = 0.1 + 0.05 * np.random.rand(N)
-    rnn = CRNN(N, dt, params, V_init, u_init, weights, biases, record=record, save_every=save_every)
+    rnn = CRNN(N, dt, params, V_init, u_init, weights, biases, record=record, inds_record=inds_record, save_every=save_every)
 
     # simple run
     rnn.reset_history()
     rnn.run(T_steps)
-    rnn.visualise_fr(10)
+    rnn.visualise()
 
 
