@@ -6,7 +6,7 @@ from copy import deepcopy
 from recurrent_net import CRNN
 from matplotlib import pyplot as plt
 from tqdm.auto import tqdm
-
+from scipy import sparse
 
 class LearningMechanism():
     '''
@@ -20,18 +20,26 @@ class LearningMechanism():
 
         '''
         self.RNN = RNN
-        self.lr = params['lr']
+        self.beta_1 = params['beta_1']
+        self.beta_2 = params['beta_2']
+        self.lr_W = params['lr_W']
+        self.lr_b = params['lr_b']
         self.horizon = params['horizon']
-        self.mu = params['momentum']
+        self.tf = params['teacher_forcing']
         self.fictive_feedback = params['fictive_feedback']
+        self.len_error_history = params['len_error_history']
+        self.update_lr = params['update_lr']
+        self.error_buffer = deque(maxlen=self.len_error_history)
         self.V_buffer = deque(maxlen=self.horizon + 1)
         self.u_buffer = deque(maxlen=self.horizon + 1)
         self.V_buffer.append(deepcopy(self.RNN.V))
         self.u_buffer.append(deepcopy(self.RNN.u))
         self.target_history = deque(maxlen=self.RNN.history_len)
+        # for Adam update
+        self.m_W = np.zeros((self.RNN.N, self.RNN.N))
+        self.m_b = np.zeros(self.RNN.N)
         self.v_W = np.zeros((self.RNN.N, self.RNN.N))
         self.v_b = np.zeros(self.RNN.N)
-
 
     def set_targets(self, out_nrns, targets):
         self.output_nrns = out_nrns
@@ -42,17 +50,22 @@ class LearningMechanism():
         self.V_buffer.append(deepcopy(self.RNN.V))
         self.u_buffer.append(deepcopy(self.RNN.u))
 
+    def calculate_error(self, desired):
+        V_out = np.array(self.V_buffer)[1:, self.output_nrns]
+        return np.linalg.norm(self.RNN.fr_fun(V_out) - desired, 2)
+
     def run_learning(self, T_steps):
         pass
 
     def calc_gradients(self, desired):
         pass
 
+
     def visualise(self):
         V_array = np.array(self.RNN.V_history).T
         target_array = np.array(self.target_history).T
         t_array = np.array(self.RNN.t_range)
-        fig, axes = plt.subplots(len(self.RNN.inds_record), 1, figsize=(20, 10))
+        fig1, axes = plt.subplots(len(self.RNN.inds_record), 1, figsize=(20, 10))
         if type(axes) != np.ndarray: axes = [axes]
         k = 0
         r = 0
@@ -72,6 +85,12 @@ class LearningMechanism():
             r += 1
         plt.subplots_adjust(wspace=0.01, hspace=0)
         plt.show()
+
+        fig2 = plt.plot(figsize=(20, 10))
+        plt.title("Error")
+        plt.plot(np.array(self.error_buffer), 'r', linewidth=3)
+        plt.show()
+
         return None
 
 class BPTT(LearningMechanism):
@@ -140,8 +159,9 @@ class BPTT(LearningMechanism):
                 self.RNN.W = self.RNN.W + self.v_W
                 self.RNN.b = self.RNN.b + self.v_b
 
-                # Enforce current state to coincide with the target state
-                # self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
+                if self.tf == True:
+                    # Enforce current state to coincide with the target state
+                    self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
 
                 # Reset buffers
                 self.reset_buffers()
@@ -170,9 +190,12 @@ class RealTimeRL(LearningMechanism):
         self.q_buffer.append(deepcopy(self.q))
         self.r_buffer.append(deepcopy(self.r))
         self.l_buffer.append(deepcopy(self.l))
+        self.W_buffer = deque(maxlen=self.len_error_history)
+        self.b_buffer = deque(maxlen=self.len_error_history)
 
     def rhs_p(self):
-        rhs_p = + np.einsum('ij,k,kj->jki', np.eye(self.RNN.N), self.RNN.fr_fun(self.RNN.V), np.ones((self.RNN.N, self.RNN.N)) - np.eye(self.RNN.N)) \
+        # rhs_p = + np.einsum('ij,k,kj->jki', np.eye(self.RNN.N), self.RNN.fr_fun(self.RNN.V), np.ones((self.RNN.N, self.RNN.N)) - np.eye(self.RNN.N)) \
+        rhs_p = + np.einsum('ij,k->jki', np.eye(self.RNN.N), self.RNN.fr_fun(self.RNN.V)) \
                 + np.einsum('ij,i,ikl->jkl', self.RNN.W, self.RNN.fr_fun_der(self.RNN.V), self.p) \
                 - self.q
         return rhs_p
@@ -208,6 +231,8 @@ class RealTimeRL(LearningMechanism):
         self.q_buffer.append(deepcopy(self.q))
         self.r_buffer.append(deepcopy(self.r))
         self.l_buffer.append(deepcopy(self.l))
+
+        #weights and biases history
 
         if self.fictive_feedback == True:
             # run one step for output neurons:
@@ -268,24 +293,40 @@ class RealTimeRL(LearningMechanism):
 
     def run_learning(self, T_steps):
         for i in tqdm(range(T_steps)):
+            #TODO: save initial position here
             if (i != 0) and (i % self.horizon == 0):
                 desired = self.targets[i - self.horizon:i, :]
+                # Calculate an error
+                E = self.calculate_error(desired)
+                self.error_buffer.append(E)
                 # Calculate weights and biases gradients
                 grad_W, grad_b = self.calc_gradients(desired)
                 # Enforce zero self coupling
                 np.fill_diagonal(grad_W, 0)
-                # Save new update directions
-                self.v_W = self.mu * self.v_W - self.lr * grad_W
-                self.v_b = self.mu * self.v_b - self.lr * grad_b
+
+                # Save gradient's momenta
+                self.m_W = self.beta_1 * self.m_W + (1 - self.beta_1) * grad_W
+                self.m_b = self.beta_1 * self.m_b + (1 - self.beta_1) * grad_b
+                self.v_W = self.beta_2 * self.v_W + (1 - self.beta_2) * (grad_W) ** 2
+                self.v_b = self.beta_2 * self.v_b + (1 - self.beta_2) * (grad_b) ** 2
+
                 # Apply changes
-                self.RNN.W = self.RNN.W + self.v_W
-                self.RNN.b = self.RNN.b + self.v_b
-                # Enforce current state to coincide with the target state
-                self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
+                eps = 0.0001
+                self.RNN.W -= self.lr_W * (self.m_W / (1 - self.beta_1 ** (i / self.horizon))) / (np.sqrt(self.v_W) + eps)
+                self.RNN.b -= self.lr_b * (self.m_b / (1 - self.beta_1 ** (i / self.horizon))) / (np.sqrt(self.v_b) + eps)
+
+                self.W_buffer.append(deepcopy(self.RNN.W))
+                self.b_buffer.append(deepcopy(self.RNN.b))
+
+                if self.tf == True:
+                    # Enforce current state to coincide with the target state
+                    self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
                 # Reset buffers
                 self.reset_buffers()
-                # Decrease learning rate
-                # self.lr *= 0.9995
+                # Change learning rate
+                if self.update_lr == True:
+                    self.lr_W *= 0.999
+                    self.lr_b *= 0.999
 
             self.rnn_step(targets=self.RNN.inverse_fr_fun(self.targets[i, :]))
             self.target_history.append(deepcopy(self.targets[i, :]))
@@ -427,6 +468,9 @@ class ReservoirRLRL(LearningMechanism):
         for i in tqdm(range(T_steps)):
             if (i != 0) and (i % self.horizon == 0):
                 desired = self.targets[i - self.horizon:i, :]
+                # Calculate an error
+                E = self.calculate_error(desired)
+                self.error_buffer.append(E)
                 # Calculate weights and biases gradients
                 d_W, grad_b = self.calc_gradients(desired)
                 # Save new update directions
@@ -436,53 +480,74 @@ class ReservoirRLRL(LearningMechanism):
                 self.RNN.W[:, self.output_nrns] = self.v_W[:, :, 0]
                 self.RNN.W[self.output_nrns, :] = self.v_W[:, :, 1].T
                 self.RNN.b = self.RNN.b + self.v_b
-                # Enforce current state to coincide with the target state
-                self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
+                if self.tf == True:
+                    # Enforce current state to coincide with the target state
+                    self.RNN.V[self.output_nrns] = deepcopy(self.RNN.inverse_fr_fun(self.targets[i, :]))
                 # Reset buffers
                 self.reset_buffers()
-                # Decrease learning rate
-                # self.lr *= 0.9995
+                # Change learning rate
+                if self.update_lr == True:
+                    self.lr = 0.002 * np.sqrt(E)
             self.rnn_step(targets=self.RNN.inverse_fr_fun(self.targets[i, :]))
             self.target_history.append(deepcopy(self.targets[i, :]))
         return None
 
 
 if __name__ == '__main__':
-    N = 100
+    N = 2
     dt = 1
-    T_steps = 10000
+    T_steps = 200000
     save_every = 1
     record = True
-    inds_record = np.arange(10)
+    inds_record = np.arange(np.minimum(N, 10))
     params = dict()
-    params['alpha'] = 0.004
+    params['alpha'] = 0.0015
     params['beta'] = 0.005
     params["V_half"] = 0.0
     params["slope"] = 50
     V_init = -50 + 100 * np.random.rand(N)
     u_init = 0.02 * np.random.rand(N) - 0.01
-    weights = 3 * np.random.rand(N, N) - 2
-    biases = 0.2 + 0.1 * np.random.rand(N)
+    # set sparse connectivity
+    sparsity = 0.1
+    M = np.sign(np.maximum(0, np.random.rand(N, N) - (1 - sparsity)))
+    np.fill_diagonal(M, 0)
+    # weights = ((0.05 - 0.3 * np.random.randn(N, N)) * M)
+    weights = -1. * np.random.rand(N, N) + 0.4
+    biases = 0.1 + 0.1 * np.random.rand(N)
     rnn = CRNN(N, dt, params, V_init, u_init, weights, biases, record=record,inds_record=inds_record, save_every=save_every)
-
     params_lm = dict()
-    params_lm['lr'] = 5e-4
-    params_lm['horizon'] = 200
-    params_lm['momentum'] = 0.6
+    params_lm['len_error_history'] = 500000
+    params_lm['lr_b'] = 1e-2
+    params_lm['lr_W'] = 1e-2
+    params_lm['beta_1'] = 0.9
+    params_lm['beta_2'] = 0.999
+    params_lm['horizon'] = 100
+    params_lm['teacher_forcing'] = False
     params_lm['fictive_feedback'] = False
+    params_lm['update_lr'] = True
     # lm = BPTT(RNN=rnn, params=params_lm)
-    # lm = RealTimeRL(RNN=rnn, params=params_lm)
+    lm = RealTimeRL(RNN=rnn, params=params_lm)
     out_nrns = [0]
-    lm = ReservoirRLRL(RNN=rnn, params=params_lm, output_nrns=out_nrns)
+    # lm = ReservoirRLRL(RNN=rnn, params=params_lm, output_nrns=out_nrns)
     t_range = np.arange(T_steps + 2 * params_lm['horizon'])
     targets = np.array([
                         # 0.25 * np.ones(len(t_range)),
                         # 0.75 * np.ones(len(t_range))
-                        rnn.fr_fun(-30 + 150 * np.sin(np.pi / 1200 * t_range) + 100 * np.cos(np.pi / 1800 * t_range))#,
-                        # rnn.fr_fun(-30 + 150 * np.sin(np.pi / 2000 * t_range + np.pi))
+                        # rnn.fr_fun(-30 + 150 * np.sin(np.pi / 1200 * t_range) + 100 * np.cos(np.pi / 1800 * t_range))#,
+                        rnn.fr_fun(350 * np.sin(np.pi / 4000 * t_range + np.pi))
                         ]).T
     lm.set_targets(out_nrns, targets)
     lm.run_learning(T_steps)
     lm.visualise()
+
+    fig, axs = plt.subplots(2, 1, figsize=(20,10))
+    axs[0].plot(np.array(lm.W_buffer).reshape(len(lm.W_buffer), -1))
+    axs[1].plot(np.array(lm.b_buffer))
+    plt.show()
+
+    # simple run
+    rnn.reset_history()
+    rnn.run(T_steps)
+    rnn.visualise()
 
 

@@ -3,7 +3,7 @@ from collections import deque
 from copy import deepcopy
 from matplotlib import pyplot as plt
 from tqdm.auto import tqdm
-
+from scipy import sparse
 class CRNN():
     def __init__(self, N, dt, params, V_init, u_init, weights, biases, save_every,
                  history_len=500000, record = None, inds_record = None):
@@ -104,6 +104,12 @@ class CRNN():
         self.t_range = deque(maxlen=self.history_len)
         return None
 
+    def connect_randomly(self, sparsity):
+        # matrix of synaptic connections
+        M = np.sign(np.maximum(0, np.random.rand(self.N, self.N) - (1 - sparsity)))
+        np.fill_diagonal(M, 0)
+        self.W = sparse.csr_matrix((0.05 - 0.25 * np.random.randn(self.N, self.N)) * M)
+
     def visualise(self):
         V_array = np.array(self.V_history).T
         t_array = np.array(self.t_range)
@@ -126,12 +132,12 @@ class CRNN():
         return None
 
 if __name__ == '__main__':
-    N = 10
-    dt = 0.1
-    T_steps = 500000
+    N = 100
+    dt = 1
+    T_steps = 50000
     save_every = 1
     record = True
-    inds_record = [0,1,4,9]
+    inds_record = np.arange(10)
     params = dict()
     params['alpha'] = 0.0015
     params['beta'] = 0.005
@@ -140,9 +146,9 @@ if __name__ == '__main__':
     V_init = -50 + 100* np.random.rand(N)
     u_init = 0.02 * np.random.rand(N) - 0.01
     weights = 3 * np.random.rand(N, N) - 2
-    biases = 0.1 + 0.05 * np.random.rand(N)
+    biases = 0.005 * np.random.rand(N)
     rnn = CRNN(N, dt, params, V_init, u_init, weights, biases, record=record, inds_record=inds_record, save_every=save_every)
-
+    rnn.connect_randomly(sparsity=0.1)
     # simple run
     rnn.reset_history()
     rnn.run(T_steps)
